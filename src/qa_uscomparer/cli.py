@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sys
 from typing import Optional
 
@@ -23,7 +24,8 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 from .comparator import compare_tickets
-from .display import render_comparison
+from .description_diff import compare_descriptions
+from .display import render_comparison, render_description_diff
 from .jira_fetcher import JiraFetcher
 
 load_dotenv()
@@ -83,6 +85,13 @@ console = Console(stderr=False)
     help="Show only fields that differ between the two tickets.",
 )
 @click.option(
+    "--description-diff",
+    "description_diff",
+    is_flag=True,
+    default=False,
+    help="Functional point-by-point comparison of the description field.",
+)
+@click.option(
     "--verbose", "-v",
     is_flag=True,
     default=False,
@@ -99,6 +108,7 @@ def main(
     output: str,
     fields: Optional[str],
     only_diff: bool,
+    description_diff: bool,
     verbose: bool,
 ) -> None:
     """Compare the definitions of two Jira tickets using the Atlassian MCP server.
@@ -133,6 +143,7 @@ def main(
             output=output.lower(),
             fields=field_list,
             only_diff=only_diff,
+            description_diff=description_diff,
         )
     )
 
@@ -149,7 +160,11 @@ async def _run(
     output: str,
     fields: Optional[list[str]],
     only_diff: bool,
+    description_diff: bool = False,
 ) -> None:
+    ticket_a_key = _normalise_ticket_identifier(ticket_a)
+    ticket_b_key = _normalise_ticket_identifier(ticket_b)
+
     fetcher = JiraFetcher(
         token=token,
         email=email,
@@ -158,21 +173,40 @@ async def _run(
     )
 
     try:
-        with console.status(f"[bold cyan]Fetching [yellow]{ticket_a}[/yellow]…"):
-            issue_a = await fetcher.fetch_issue(ticket_a)
-        with console.status(f"[bold cyan]Fetching [yellow]{ticket_b}[/yellow]…"):
-            issue_b = await fetcher.fetch_issue(ticket_b)
+        with console.status(f"[bold cyan]Fetching [yellow]{ticket_a_key}[/yellow]…"):
+            issue_a = await fetcher.fetch_issue(ticket_a_key)
+        with console.status(f"[bold cyan]Fetching [yellow]{ticket_b_key}[/yellow]…"):
+            issue_b = await fetcher.fetch_issue(ticket_b_key)
     except Exception as exc:  # noqa: BLE001
         console.print(f"\n[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
+
+    if description_diff:
+        desc_result = compare_descriptions(issue_a, issue_b)
+        render_description_diff(
+            result=desc_result,
+            output_format=output,
+            only_diff=only_diff,
+            console=console,
+        )
+        return
 
     comparison = compare_tickets(issue_a, issue_b, fields=fields)
 
     render_comparison(
         comparison=comparison,
-        ticket_a=ticket_a,
-        ticket_b=ticket_b,
+        ticket_a=ticket_a_key,
+        ticket_b=ticket_b_key,
         output_format=output,
         only_diff=only_diff,
         console=console,
     )
+
+
+def _normalise_ticket_identifier(raw: str) -> str:
+    """Accept either plain issue keys or full Jira browse URLs."""
+    value = raw.strip()
+    match = re.search(r"/browse/([A-Za-z][A-Za-z0-9_]+-\d+)", value)
+    if match:
+        return match.group(1).upper()
+    return value.upper()

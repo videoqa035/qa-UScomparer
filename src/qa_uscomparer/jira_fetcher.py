@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from urllib.parse import urlsplit
 from typing import Any
 
 import httpx
@@ -79,23 +80,40 @@ class JiraFetcher:
         self.token = token
         self.email = email
         self.mcp_base_url = mcp_base_url
-        self.jira_base_url = jira_base_url
+        self.jira_base_url = _normalise_jira_base_url(jira_base_url)
+        self._mcp_unavailable = False
 
     async def fetch_issue(self, issue_key: str) -> dict[str, Any]:
         """Fetch a Jira issue, preferring MCP with REST API fallback."""
-        try:
-            logger.debug("Attempting MCP fetch for %s", issue_key)
-            return await self._fetch_via_mcp(issue_key)
-        except Exception as mcp_err:
-            logger.warning(
-                "MCP fetch failed for %s (%s). Trying REST API fallback.", issue_key, mcp_err
+        if not self._mcp_unavailable:
+            try:
+                logger.debug("Attempting MCP fetch for %s", issue_key)
+                return await self._fetch_via_mcp(issue_key)
+            except Exception as mcp_err:
+                if "does not expose a Jira issue tool" in str(mcp_err):
+                    self._mcp_unavailable = True
+                    logger.info(
+                        "MCP does not expose Jira issue tools. Using REST API fallback for %s.",
+                        issue_key,
+                    )
+                else:
+                    logger.warning(
+                        "MCP fetch failed for %s (%s). Trying REST API fallback.", issue_key, mcp_err
+                    )
+                if not self.jira_base_url:
+                    raise RuntimeError(
+                        f"MCP connection failed and no --jira-url / JIRA_BASE_URL is set "
+                        f"to use the REST API fallback.\nMCP error: {mcp_err}"
+                    ) from mcp_err
+                return await self._fetch_via_rest(issue_key)
+
+        logger.debug("Skipping MCP for %s because Jira issue tool is unavailable.", issue_key)
+        if not self.jira_base_url:
+            raise RuntimeError(
+                "MCP Jira issue tool is unavailable and no --jira-url / JIRA_BASE_URL is set "
+                "to use the REST API fallback."
             )
-            if not self.jira_base_url:
-                raise RuntimeError(
-                    f"MCP connection failed and no --jira-url / JIRA_BASE_URL is set "
-                    f"to use the REST API fallback.\nMCP error: {mcp_err}"
-                ) from mcp_err
-            return await self._fetch_via_rest(issue_key)
+        return await self._fetch_via_rest(issue_key)
 
     # ── Private helpers ──────────────────────────────────────────────────────
 
@@ -105,8 +123,9 @@ class JiraFetcher:
             token=self.token,
             email=self.email,
         ) as client:
+            tool_name = await _resolve_mcp_issue_tool(client)
             content = await client.call_tool(
-                "jira_get_issue",
+                tool_name,
                 {"issueIdOrKey": issue_key, "fields": JIRA_FIELDS},
             )
 
@@ -122,14 +141,56 @@ class JiraFetcher:
     async def _fetch_via_rest(self, issue_key: str) -> dict[str, Any]:
         """Direct Jira REST API v3 call."""
         base = (self.jira_base_url or "").rstrip("/")
-        url = f"{base}/rest/api/3/issue/{issue_key}"
         params = {
             "fields": ",".join(JIRA_FIELDS),
             "expand": "names,renderedFields",
         }
+        candidate_urls = [
+            f"{base}/rest/api/3/issue/{issue_key}",
+            f"{base}/rest/api/2/issue/{issue_key}",
+        ]
+
+        response: httpx.Response | None = None
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(
-                url, headers=self._rest_auth_headers(), params=params
+            for idx, url in enumerate(candidate_urls):
+                response = await client.get(
+                    url,
+                    headers=self._rest_auth_headers(),
+                    params=params,
+                )
+                # Some Jira setups reject Basic auth even when email is provided.
+                # Retry once with Bearer if initial request returns 401.
+                if response.status_code == 401 and self.email:
+                    response = await client.get(
+                        url,
+                        headers=self._rest_auth_headers(force_bearer=True),
+                        params=params,
+                    )
+                # If v3 is unavailable on Server/DC, retry with v2.
+                if idx == 0 and response.status_code in {400, 404, 405}:
+                    continue
+                # Some Server/DC instances redirect /rest/api/3 to login even with valid PAT.
+                # In that case, try /rest/api/2 before surfacing an auth error.
+                if idx == 0 and response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location", "")
+                    if "login" in location.lower():
+                        continue
+                break
+
+        if response is None:
+            raise RuntimeError("Unexpected Jira REST error: no response received.")
+        if response.status_code in {301, 302, 303, 307, 308}:
+            location = response.headers.get("location", "")
+            if "login" in location.lower():
+                raise RuntimeError(
+                    "Authentication failed (redirected to login). "
+                    "Check token type and email usage: Jira Cloud requires email+API token; "
+                    "Jira Data Center/Server requires PAT without email."
+                )
+            raise RuntimeError(
+                "Unexpected redirect from Jira REST API. "
+                "Ensure JIRA_BASE_URL points to the Jira host root (e.g. https://org.atlassian.net), "
+                "not to /browse or another subpath."
             )
         if response.status_code == 401:
             raise RuntimeError(
@@ -143,8 +204,8 @@ class JiraFetcher:
         response.raise_for_status()
         return _normalise_issue(response.json())
 
-    def _rest_auth_headers(self) -> dict[str, str]:
-        if self.email:
+    def _rest_auth_headers(self, force_bearer: bool = False) -> dict[str, str]:
+        if self.email and not force_bearer:
             credentials = base64.b64encode(
                 f"{self.email}:{self.token}".encode()
             ).decode()
@@ -223,3 +284,40 @@ def _adf_to_text(node: Any, _depth: int = 0) -> str:
     if isinstance(node, list):
         return "\n".join(_adf_to_text(n, _depth) for n in node)
     return str(node)
+
+
+async def _resolve_mcp_issue_tool(client: AtlassianMCPClient) -> str:
+    """Pick a Jira issue tool name supported by the connected MCP server."""
+    tools = await client.list_tools()
+    preferred_tools = (
+        "jira_get_issue",
+        "jira.getIssue",
+        "getJiraIssue",
+    )
+    for candidate in preferred_tools:
+        if candidate in tools:
+            return candidate
+    raise RuntimeError(
+        "Connected MCP server does not expose a Jira issue tool. "
+        f"Available tools: {', '.join(tools) or 'none'}"
+    )
+
+
+def _normalise_jira_base_url(jira_base_url: str | None) -> str | None:
+    """Normalise Jira base URL to host root and strip common UI paths like /browse."""
+    if not jira_base_url:
+        return jira_base_url
+
+    stripped = jira_base_url.strip().rstrip("/")
+    if not stripped:
+        return None
+
+    parsed = urlsplit(stripped)
+    path = parsed.path.rstrip("/")
+    if path.startswith("/browse"):
+        path = ""
+
+    if not parsed.scheme or not parsed.netloc:
+        return stripped
+
+    return f"{parsed.scheme}://{parsed.netloc}{path}"

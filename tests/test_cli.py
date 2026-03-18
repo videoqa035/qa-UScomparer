@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from click.testing import CliRunner
 
-from qa_uscomparer.cli import main
+from qa_uscomparer.cli import _normalise_ticket_identifier, main
 from qa_uscomparer.comparator import ComparisonResult, FieldDiff
 
 
@@ -126,3 +126,29 @@ class TestCLI:
                 "--jira-url", "https://org.atlassian.net",
             ])
         assert result.exit_code != 0
+
+    def test_accepts_browse_url_identifiers(self):
+        with _mock_run(_make_result(key_a="GOMOBILE-58071", key_b="STV-30750")):
+            result = _invoke([
+                "https://jira.tid.es/browse/GOMOBILE-58071",
+                "https://jira.tid.es/browse/STV-30750",
+                "--token", "fake-token",
+                "--jira-url", "https://jira.tid.es",
+                "--output", "json",
+            ])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["ticket_a"] == "GOMOBILE-58071"
+        assert data["ticket_b"] == "STV-30750"
+
+
+class TestTicketIdentifierNormalisation:
+    def test_normalise_plain_key(self):
+        assert _normalise_ticket_identifier("gomspecs-3364") == "GOMSPECS-3364"
+
+    def test_normalise_browse_url(self):
+        assert (
+            _normalise_ticket_identifier("https://jira.tid.es/browse/GOMOBILE-58071")
+            == "GOMOBILE-58071"
+        )

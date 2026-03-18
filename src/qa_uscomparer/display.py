@@ -18,6 +18,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .comparator import ComparisonResult, FieldDiff
+from .description_diff import DescriptionDiffResult, PointDiff
 
 
 # ── Display constants ─────────────────────────────────────────────────────────
@@ -242,3 +243,182 @@ def _md_cell(value: Any, max_len: int = 120) -> str:
     raw = str(value) if value is not None else "—"
     trimmed = (raw[:max_len - 1] + "…") if len(raw) > max_len else raw
     return trimmed.replace("|", "\\|").replace("\n", " ")
+
+
+# ── Description functional-diff renderer ─────────────────────────────────────
+
+_DESC_STATUS_ICON = {
+    "equal":     "✅",
+    "different": "⚠️ ",
+    "only_a":    "◀ ",
+    "only_b":    "▶ ",
+}
+
+_DESC_STATUS_COLOR = {
+    "equal":     "green",
+    "different": "yellow",
+    "only_a":    "cyan",
+    "only_b":    "magenta",
+}
+
+_DESC_STATUS_LABEL = {
+    "equal":     "Igual",
+    "different": "No concuerda",
+    "only_a":    "Solo en A",
+    "only_b":    "Solo en B",
+}
+
+
+def render_description_diff(
+    result: DescriptionDiffResult,
+    output_format: str,
+    only_diff: bool,
+    console: Console,
+) -> None:
+    """Render a :class:`DescriptionDiffResult` in the requested format."""
+    if output_format == "json":
+        _render_desc_json(result, console)
+    elif output_format == "markdown":
+        _render_desc_markdown(result, only_diff, console)
+    else:
+        _render_desc_table(result, only_diff, console)
+
+
+def _select_desc_points(
+    result: DescriptionDiffResult,
+    only_diff: bool,
+) -> list[PointDiff]:
+    if only_diff:
+        return result.different + result.only_in_a + result.only_in_b
+    return result.points
+
+
+def _render_desc_table(
+    result: DescriptionDiffResult,
+    only_diff: bool,
+    console: Console,
+) -> None:
+    points = _select_desc_points(result, only_diff)
+
+    if not points:
+        console.print(
+            Panel(
+                "[bold green]Las descripciones son funcionalmente idénticas.[/bold green]",
+                title="[white]qa-UScomparer · Descripción[/white]",
+            )
+        )
+        return
+
+    title = Text()
+    title.append("Comparativa funcional de descripción   ", style="bold white")
+    title.append(result.key_a, style="bold cyan")
+    title.append("  vs  ", style="dim white")
+    title.append(result.key_b, style="bold magenta")
+
+    table = Table(
+        title=title,
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold white on dark_blue",
+        expand=True,
+        show_lines=True,
+        padding=(0, 1),
+    )
+    table.add_column("Estado", style="bold", min_width=14, max_width=14, no_wrap=True)
+    table.add_column(
+        f"[cyan]{result.key_a}[/cyan]",
+        min_width=36,
+        overflow="fold",
+    )
+    table.add_column(
+        f"[magenta]{result.key_b}[/magenta]",
+        min_width=36,
+        overflow="fold",
+    )
+
+    for pt in points:
+        color = _DESC_STATUS_COLOR[pt.status]
+        icon  = _DESC_STATUS_ICON[pt.status]
+        label = _DESC_STATUS_LABEL[pt.status]
+        text_a = pt.point_a or "[dim]—[/dim]"
+        text_b = pt.point_b or "[dim]—[/dim]"
+        row_style = "on grey7" if pt.status == "different" else None
+        table.add_row(
+            f"[{color}]{icon} {label}[/{color}]",
+            text_a,
+            text_b,
+            style=row_style,
+        )
+
+    console.print()
+    console.print(table)
+
+    n_eq   = len(result.equal)
+    n_diff = len(result.different)
+    n_a    = len(result.only_in_a)
+    n_b    = len(result.only_in_b)
+    total  = len(result.points)
+    console.print()
+    console.print(
+        f"  [bold]Resumen:[/bold]  "
+        f"[green]{n_eq} iguales[/green]  │  "
+        f"[yellow]{n_diff} no concuerdan[/yellow]  │  "
+        f"[cyan]{n_a} solo en {result.key_a}[/cyan]  │  "
+        f"[magenta]{n_b} solo en {result.key_b}[/magenta]"
+        f"  [dim]({total} puntos analizados)[/dim]"
+    )
+    console.print()
+
+
+def _render_desc_json(result: DescriptionDiffResult, console: Console) -> None:
+    import json as _json
+
+    payload = {
+        "ticket_a": result.key_a,
+        "ticket_b": result.key_b,
+        "resumen": {
+            "iguales":        len(result.equal),
+            "no_concuerdan":  len(result.different),
+            "solo_en_a":      len(result.only_in_a),
+            "solo_en_b":      len(result.only_in_b),
+        },
+        "puntos": [
+            {
+                "estado":     p.status,
+                "punto_a":    p.point_a,
+                "punto_b":    p.point_b,
+                "similitud":  p.similarity,
+            }
+            for p in result.points
+        ],
+    }
+    console.print(_json.dumps(payload, indent=2, ensure_ascii=False))
+
+
+def _render_desc_markdown(
+    result: DescriptionDiffResult,
+    only_diff: bool,
+    console: Console,
+) -> None:
+    points = _select_desc_points(result, only_diff)
+    lines = [
+        f"# Comparativa funcional de descripción: {result.key_a} vs {result.key_b}",
+        "",
+        f"| Estado | {result.key_a} | {result.key_b} |",
+        "|--------|-----------|-----------|" ,
+    ]
+    for pt in points:
+        icon  = _DESC_STATUS_ICON[pt.status]
+        label = _DESC_STATUS_LABEL[pt.status]
+        a = _md_cell(pt.point_a or "—")
+        b = _md_cell(pt.point_b or "—")
+        lines.append(f"| {icon} **{label}** | {a} | {b} |")
+
+    lines += [
+        "",
+        f"**Iguales:** {len(result.equal)}  |  "
+        f"**No concuerdan:** {len(result.different)}  |  "
+        f"**Solo en {result.key_a}:** {len(result.only_in_a)}  |  "
+        f"**Solo en {result.key_b}:** {len(result.only_in_b)}",
+    ]
+    console.print("\n".join(lines))
