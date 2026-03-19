@@ -23,6 +23,7 @@ import click
 from dotenv import load_dotenv
 from rich.console import Console
 
+from .analyzer import generate_questions
 from .comparator import compare_tickets
 from .description_diff import compare_descriptions
 from .display import render_comparison, render_description_diff
@@ -81,15 +82,15 @@ console = Console(stderr=False)
 @click.option(
     "--only-diff",
     is_flag=True,
-    default=False,
-    help="Show only fields that differ between the two tickets.",
+    default=True,
+    help="Mostrar sólo los campos que difieren (activado por defecto).",
 )
 @click.option(
     "--description-diff",
     "description_diff",
     is_flag=True,
-    default=False,
-    help="Functional point-by-point comparison of the description field.",
+    default=True,
+    help="Incluir comparativa funcional de la descripción (activado por defecto).",
 )
 @click.option(
     "--verbose", "-v",
@@ -181,17 +182,13 @@ async def _run(
         console.print(f"\n[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
 
-    if description_diff:
-        desc_result = compare_descriptions(issue_a, issue_b)
-        render_description_diff(
-            result=desc_result,
-            output_format=output,
-            only_diff=only_diff,
-            console=console,
-        )
-        return
-
     comparison = compare_tickets(issue_a, issue_b, fields=fields)
+
+    # Comparativa de descripción (por defecto siempre activa)
+    desc_result = compare_descriptions(issue_a, issue_b) if description_diff else None
+
+    # Generación de preguntas/dudas contextuales
+    questions = generate_questions(comparison, desc_result)
 
     render_comparison(
         comparison=comparison,
@@ -200,6 +197,8 @@ async def _run(
         output_format=output,
         only_diff=only_diff,
         console=console,
+        questions=questions,
+        desc_result=desc_result,
     )
 
 

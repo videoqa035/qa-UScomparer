@@ -84,7 +84,8 @@ class TestCLI:
         data = json.loads(result.output)
         assert data["ticket_a"] == "PROJ-101"
         assert data["ticket_b"] == "PROJ-102"
-        assert "diffs" in data
+        assert "diferencias" in data
+        assert "resumen" in data
 
     def test_markdown_output_contains_table(self):
         with _mock_run(_make_result()):
@@ -96,7 +97,8 @@ class TestCLI:
                 "--output", "markdown",
             ])
         assert result.exit_code == 0
-        assert "| Field |" in result.output
+        # La cabecera de tabla está en español
+        assert "| Campo |" in result.output
         assert "PROJ-101" in result.output
         assert "PROJ-102" in result.output
 
@@ -112,7 +114,8 @@ class TestCLI:
             ])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        statuses = {d["status"] for d in data["diffs"]}
+        # Con only-diff el JSON no incluye campos "equal" en diferencias
+        statuses = {d["estado"] for d in data.get("diferencias", [])}
         assert "equal" not in statuses
 
     def test_error_exits_nonzero_on_fetch_failure(self):
@@ -126,6 +129,20 @@ class TestCLI:
                 "--jira-url", "https://org.atlassian.net",
             ])
         assert result.exit_code != 0
+
+    def test_json_includes_suggested_questions(self):
+        with _mock_run(_make_result()):
+            result = _invoke([
+                "PROJ-101", "PROJ-102",
+                "--token", "fake-token",
+                "--jira-url", "https://org.atlassian.net",
+                "--output", "json",
+            ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        # Cuando hay diferencias se generan dudas sugeridas
+        assert "dudas_sugeridas" in data
+        assert len(data["dudas_sugeridas"]) > 0
 
     def test_accepts_browse_url_identifiers(self):
         with _mock_run(_make_result(key_a="GOMOBILE-58071", key_b="STV-30750")):
