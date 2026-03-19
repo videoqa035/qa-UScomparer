@@ -459,6 +459,150 @@ def _md_cell(value: Any, max_len: int = 120) -> str:
     return trimmed.replace("|", "\\|").replace("\n", " ")
 
 
+# ── Vista de solo descripción ─────────────────────────────────────────────────
+
+def render_description_table(
+    result: DescriptionDiffResult,
+    ticket_a: str,
+    ticket_b: str,
+    output_format: str,
+    console: Console,
+) -> None:
+    """Renderiza únicamente las diferencias funcionales de la descripción."""
+    if output_format == "json":
+        _render_desc_only_json(result, console)
+    elif output_format == "markdown":
+        _render_desc_only_markdown(result, ticket_a, ticket_b, console)
+    else:
+        _render_desc_only_table(result, ticket_a, ticket_b, console)
+
+
+def _render_desc_only_table(
+    result: DescriptionDiffResult,
+    ticket_a: str,
+    ticket_b: str,
+    console: Console,
+) -> None:
+    console.print()
+    header = Text(justify="center")
+    header.append("Análisis funcional de descripción  ", style="bold white")
+    header.append(ticket_a, style="bold cyan")
+    header.append("  vs  ", style="dim white")
+    header.append(ticket_b, style="bold magenta")
+    console.print(Panel(header, box=box.DOUBLE_EDGE, padding=(0, 2)))
+    console.print()
+
+    diff_points = result.different + result.only_in_a + result.only_in_b
+
+    if not diff_points:
+        console.print(
+            "  [bold green]✅  Las descripciones son funcionalmente idénticas.[/bold green]"
+        )
+        console.print()
+        return
+
+    table = Table(
+        box=box.SIMPLE_HEAD,
+        show_lines=True,
+        expand=True,
+        padding=(0, 1),
+    )
+    table.add_column("Estado", style="bold", no_wrap=True, min_width=22)
+    table.add_column(ticket_a, style="cyan", ratio=1)
+    table.add_column(ticket_b, style="magenta", ratio=1)
+
+    _LABEL = {
+        "different": "⚠️  No concuerda",
+        "only_a":    f"◀  Solo en {ticket_a}",
+        "only_b":    f"▶  Solo en {ticket_b}",
+    }
+
+    for pt in diff_points:
+        table.add_row(
+            _LABEL.get(pt.status, pt.status),
+            pt.point_a or "[dim]—[/dim]",
+            pt.point_b or "[dim]—[/dim]",
+        )
+
+    console.print(table)
+
+    neq   = len(result.equal)
+    n     = len(result.points)
+    ndiff = len(result.different)
+    na    = len(result.only_in_a)
+    nb    = len(result.only_in_b)
+    footer = (
+        f"[yellow]⚠ {ndiff} no concuerdan[/yellow]  │  "
+        f"[cyan]◀ {na} solo en {ticket_a}[/cyan]  │  "
+        f"[magenta]▶ {nb} solo en {ticket_b}[/magenta]  │  "
+        f"[green]✅ {neq} coinciden[/green]  "
+        f"[dim]({n} puntos analizados)[/dim]"
+    )
+    console.print(Panel(footer, box=box.SIMPLE, padding=(0, 2)))
+    console.print()
+
+
+def _render_desc_only_json(
+    result: DescriptionDiffResult,
+    console: Console,
+) -> None:
+    payload = {
+        "ticket_a": result.key_a,
+        "ticket_b": result.key_b,
+        "resumen": {
+            "no_concuerdan": len(result.different),
+            "solo_en_a":     len(result.only_in_a),
+            "solo_en_b":     len(result.only_in_b),
+            "coinciden":     len(result.equal),
+            "total":         len(result.points),
+        },
+        "diferencias": [
+            {
+                "estado":  p.status,
+                "punto_a": p.point_a or None,
+                "punto_b": p.point_b or None,
+            }
+            for p in (result.different + result.only_in_a + result.only_in_b)
+        ],
+    }
+    console.print(json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+                  highlight=False, soft_wrap=True)
+
+
+def _render_desc_only_markdown(
+    result: DescriptionDiffResult,
+    ticket_a: str,
+    ticket_b: str,
+    console: Console,
+) -> None:
+    diff_pts = result.different + result.only_in_a + result.only_in_b
+    lines = [
+        f"# Análisis funcional: {ticket_a} vs {ticket_b}",
+        "",
+        f"| Estado | {ticket_a} | {ticket_b} |",
+        "|--------|" + "-" * (len(ticket_a) + 2) + "|" + "-" * (len(ticket_b) + 2) + "|",
+    ]
+    _LABEL = {
+        "different": "⚠️ No concuerda",
+        "only_a":    f"◀ Solo en {ticket_a}",
+        "only_b":    f"▶ Solo en {ticket_b}",
+    }
+    for pt in diff_pts:
+        tag = _LABEL.get(pt.status, pt.status)
+        lines.append(
+            f"| {tag} | {_md_cell(pt.point_a or '—')} | {_md_cell(pt.point_b or '—')} |"
+        )
+    lines += [
+        "",
+        f"**No concuerdan:** {len(result.different)}  |  "
+        f"**Solo en {ticket_a}:** {len(result.only_in_a)}  |  "
+        f"**Solo en {ticket_b}:** {len(result.only_in_b)}  |  "
+        f"**Coinciden:** {len(result.equal)}  "
+        f"({len(result.points)} puntos analizados)",
+    ]
+    console.print("\n".join(lines))
+
+
 # ── Compatibilidad hacia atrás: render_description_diff ──────────────────────
 # Mantenida para que el flag --description-diff siga funcionando en solitario.
 

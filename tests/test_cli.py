@@ -97,12 +97,12 @@ class TestCLI:
                 "--output", "markdown",
             ])
         assert result.exit_code == 0
-        # La cabecera de tabla está en español
-        assert "| Campo |" in result.output
+        # La cabecera de tabla ahora es la de descripción
+        assert "| Estado |" in result.output
         assert "PROJ-101" in result.output
         assert "PROJ-102" in result.output
 
-    def test_only_diff_flag_filters(self):
+    def test_json_output_has_description_diff(self):
         with _mock_run(_make_result()):
             result = _invoke([
                 "PROJ-101", "PROJ-102",
@@ -110,11 +110,12 @@ class TestCLI:
                 "--email", "user@org.com",
                 "--jira-url", "https://org.atlassian.net",
                 "--output", "json",
-                "--only-diff",
             ])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        # Con only-diff el JSON no incluye campos "equal" en diferencias
+        # El JSON ahora sólo contiene la comparativa de descripción
+        assert "diferencias" in data
+        assert "resumen" in data
         statuses = {d["estado"] for d in data.get("diferencias", [])}
         assert "equal" not in statuses
 
@@ -130,7 +131,7 @@ class TestCLI:
             ])
         assert result.exit_code != 0
 
-    def test_json_includes_suggested_questions(self):
+    def test_json_output_structure(self):
         with _mock_run(_make_result()):
             result = _invoke([
                 "PROJ-101", "PROJ-102",
@@ -140,9 +141,11 @@ class TestCLI:
             ])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        # Cuando hay diferencias se generan dudas sugeridas
-        assert "dudas_sugeridas" in data
-        assert len(data["dudas_sugeridas"]) > 0
+        # El JSON de descripción tiene ticket_a/b, resumen y diferencias
+        assert data["ticket_a"] == "PROJ-101"
+        assert data["ticket_b"] == "PROJ-102"
+        assert "resumen" in data
+        assert "diferencias" in data
 
     def test_accepts_browse_url_identifiers(self):
         with _mock_run(_make_result(key_a="GOMOBILE-58071", key_b="STV-30750")):

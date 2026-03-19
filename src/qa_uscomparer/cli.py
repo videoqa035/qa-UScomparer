@@ -23,10 +23,8 @@ import click
 from dotenv import load_dotenv
 from rich.console import Console
 
-from .analyzer import generate_questions
-from .comparator import compare_tickets
 from .description_diff import compare_descriptions
-from .display import render_comparison, render_description_diff
+from .display import render_description_table
 from .jira_fetcher import JiraFetcher
 
 load_dotenv()
@@ -74,25 +72,6 @@ console = Console(stderr=False)
     help="Output format.",
 )
 @click.option(
-    "--fields",
-    default=None,
-    metavar="FIELD1,FIELD2,…",
-    help="Comma-separated list of fields to compare (all fields if omitted).",
-)
-@click.option(
-    "--only-diff",
-    is_flag=True,
-    default=True,
-    help="Mostrar sólo los campos que difieren (activado por defecto).",
-)
-@click.option(
-    "--description-diff",
-    "description_diff",
-    is_flag=True,
-    default=True,
-    help="Incluir comparativa funcional de la descripción (activado por defecto).",
-)
-@click.option(
     "--verbose", "-v",
     is_flag=True,
     default=False,
@@ -107,9 +86,6 @@ def main(
     base_url: str,
     jira_url: Optional[str],
     output: str,
-    fields: Optional[str],
-    only_diff: bool,
-    description_diff: bool,
     verbose: bool,
 ) -> None:
     """Compare the definitions of two Jira tickets using the Atlassian MCP server.
@@ -131,8 +107,6 @@ def main(
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
 
-    field_list = [f.strip() for f in fields.split(",")] if fields else None
-
     asyncio.run(
         _run(
             ticket_a=ticket_a,
@@ -142,9 +116,6 @@ def main(
             base_url=base_url,
             jira_url=jira_url,
             output=output.lower(),
-            fields=field_list,
-            only_diff=only_diff,
-            description_diff=description_diff,
         )
     )
 
@@ -159,9 +130,6 @@ async def _run(
     base_url: str,
     jira_url: Optional[str],
     output: str,
-    fields: Optional[list[str]],
-    only_diff: bool,
-    description_diff: bool = False,
 ) -> None:
     ticket_a_key = _normalise_ticket_identifier(ticket_a)
     ticket_b_key = _normalise_ticket_identifier(ticket_b)
@@ -182,23 +150,14 @@ async def _run(
         console.print(f"\n[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
 
-    comparison = compare_tickets(issue_a, issue_b, fields=fields)
+    desc_result = compare_descriptions(issue_a, issue_b)
 
-    # Comparativa de descripción (por defecto siempre activa)
-    desc_result = compare_descriptions(issue_a, issue_b) if description_diff else None
-
-    # Generación de preguntas/dudas contextuales
-    questions = generate_questions(comparison, desc_result)
-
-    render_comparison(
-        comparison=comparison,
+    render_description_table(
+        result=desc_result,
         ticket_a=ticket_a_key,
         ticket_b=ticket_b_key,
         output_format=output,
-        only_diff=only_diff,
         console=console,
-        questions=questions,
-        desc_result=desc_result,
     )
 
 
