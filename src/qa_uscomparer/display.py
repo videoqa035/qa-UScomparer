@@ -421,13 +421,36 @@ def _friendly(field_name: str) -> str:
     return _FRIENDLY_NAMES.get(field_name, field_name.replace("_", " ").title())
 
 
-def _fmt(value: Any, max_len: int = 150) -> str:
+def _fmt(value: Any, max_len: int = 200) -> str:
     if value is None:
         return "[dim]—[/dim]"
     if isinstance(value, list):
-        return "[dim](vacío)[/dim]" if not value else ", ".join(str(v) for v in value)
-    text = str(value)
+        if not value:
+            return "[dim](vacío)[/dim]"
+        items = [_clean_value(v) for v in value]
+        text = ", ".join(items)
+    else:
+        text = _clean_value(value)
     return text[: max_len - 1] + "…" if len(text) > max_len else text
+
+
+def _clean_value(value: Any) -> str:
+    """Convierte un valor a texto plano, eliminando HTML y formateando dicts."""
+    import html as _html
+    import re as _re
+    if value is None:
+        return "—"
+    text = str(value)
+    # Strip HTML if present
+    if "<" in text and ">" in text:
+        text = _re.sub(r"<br\s*/?>", "\n", text, flags=_re.IGNORECASE)
+        text = _re.sub(r"</?(p|li|h\d|pre|div|ul|ol)[^>]*>", "\n", text, flags=_re.IGNORECASE)
+        text = _re.sub(r"<[^>]+>", " ", text)
+        text = _html.unescape(text)
+        text = text.replace("\xa0", " ")
+        text = _re.sub(r" {2,}", " ", text)
+        text = _re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
 
 
 def _md_cell(value: Any, max_len: int = 120) -> str:

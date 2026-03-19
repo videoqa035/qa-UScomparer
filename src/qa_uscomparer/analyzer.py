@@ -312,9 +312,20 @@ def _label(field: str) -> str:
     return _FIELD_LABEL.get(field, field.replace("_", " ").title())
 
 
-def _fmt(value: Any) -> str:
+def _fmt(value: Any, max_len: int = 120) -> str:
+    """Texto plano, sin HTML, truncado a max_len caracteres."""
+    import html as _html
+    import re as _re
     if value is None:
         return "—"
     if isinstance(value, list):
-        return ", ".join(str(v) for v in value) if value else "—"
-    return str(value)
+        text = ", ".join(str(v) for v in value) if value else "—"
+    else:
+        text = str(value)
+    # Strip HTML
+    if "<" in text and ">" in text:
+        text = _re.sub(r"<[^>]+>", " ", text)
+        text = _html.unescape(text)
+        text = text.replace("\xa0", " ")
+        text = _re.sub(r"\s+", " ", text).strip()
+    return (text[:max_len - 1] + "…") if len(text) > max_len else text

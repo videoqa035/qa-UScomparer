@@ -148,8 +148,9 @@ class TestNormaliseIssue:
         )
         norm = _normalise_issue(raw)
         assert isinstance(norm["comment"], list)
-        assert norm["comment"][0]["author"] == "John"
-        assert "A comment" in norm["comment"][0]["body"]
+        # New format: "Author: body (date)"
+        assert norm["comment"][0].startswith("John:")
+        assert "A comment" in norm["comment"][0]
 
 
 # ── JiraFetcher ───────────────────────────────────────────────────────────────

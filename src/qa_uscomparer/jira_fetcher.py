@@ -229,20 +229,26 @@ def _normalise_issue(raw: dict[str, Any]) -> dict[str, Any]:
 
     for field_name, field_value in fields.items():
         if field_name == "description":
-            # Atlassian Document Format → plain text
+            # ADF (JSON dict) → plain text; HTML string (REST v2) → stripped plain text
             result[field_name] = _adf_to_text(field_value)
         elif field_name == "comment":
             comments = (
                 field_value.get("comments", []) if isinstance(field_value, dict) else []
             )
+            # Format as readable strings: "Author: body (date)"
             result[field_name] = [
-                {
-                    "author": _resolve(c.get("author")),
-                    "body": _adf_to_text(c.get("body")),
-                    "created": c.get("created"),
-                }
+                f"{_resolve(c.get('author'))}: {_adf_to_text(c.get('body'))} ({c.get('created', '')})"
                 for c in comments
             ]
+        elif field_name == "subtasks":
+            if isinstance(field_value, list):
+                result[field_name] = [
+                    _issue_ref(s) for s in field_value
+                ]
+            else:
+                result[field_name] = _resolve(field_value)
+        elif field_name == "parent":
+            result[field_name] = _issue_ref(field_value) if isinstance(field_value, dict) else _resolve(field_value)
         else:
             result[field_name] = _resolve(field_value)
 
@@ -264,11 +270,28 @@ def _resolve(value: Any) -> Any:
     return value
 
 
+def _issue_ref(issue: Any) -> str:
+    """Convert a Jira issue dict (subtask / parent) to 'KEY: Summary'."""
+    if not isinstance(issue, dict):
+        return str(issue)
+    key = issue.get("key", "")
+    fields = issue.get("fields", {})
+    summary = ""
+    if isinstance(fields, dict):
+        summary = fields.get("summary", "")
+    if not summary:
+        summary = _resolve(issue) or ""
+    return f"{key}: {summary}".strip(": ")
+
+
 def _adf_to_text(node: Any, _depth: int = 0) -> str:
-    """Recursively convert Atlassian Document Format (ADF) to plain text."""
+    """Recursively convert Atlassian Document Format (ADF) OR HTML string to plain text."""
     if node is None:
         return ""
     if isinstance(node, str):
+        # REST API v2 returns raw HTML — strip it to plain text
+        if "<" in node:
+            return _strip_html(node)
         return node
     if isinstance(node, dict):
         node_type = node.get("type", "")
@@ -301,6 +324,23 @@ async def _resolve_mcp_issue_tool(client: AtlassianMCPClient) -> str:
         "Connected MCP server does not expose a Jira issue tool. "
         f"Available tools: {', '.join(tools) or 'none'}"
     )
+
+
+def _strip_html(raw: str) -> str:
+    """Convert an HTML string to plain text (used for Jira DC/Server descriptions)."""
+    import html as _html
+    import re as _re
+    # Block-level tags → newline
+    text = _re.sub(r"<br\s*/?>", "\n", raw, flags=_re.IGNORECASE)
+    text = _re.sub(r"</?(p|li|h\d|pre|div|ul|ol|blockquote)[^>]*>", "\n", text, flags=_re.IGNORECASE)
+    # Strip remaining tags
+    text = _re.sub(r"<[^>]+>", " ", text)
+    text = _html.unescape(text)
+    text = text.replace("\xa0", " ").replace("\r", "\n")
+    # Collapse whitespace
+    text = _re.sub(r" {2,}", " ", text)
+    text = _re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
 
 
 def _normalise_jira_base_url(jira_base_url: str | None) -> str | None:
